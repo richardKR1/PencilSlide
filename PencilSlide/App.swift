@@ -42,6 +42,10 @@ struct PhotoAlbum: Identifiable {
 @MainActor
 final class GalleryStore: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
     @Published var authorization: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @Published var isRequestingPhotoAccess = false
+    @Published var permissionMessage: String?
+    private var permissionRequestToken = UUID()
+    private var observingLibrary = false
     @Published var albums: [PhotoAlbum] = []
     @Published var activeAlbum: PhotoAlbum?
     @Published var assets: [PHAsset] = []
@@ -53,8 +57,10 @@ final class GalleryStore: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
 
     override init() {
         super.init()
-        PHPhotoLibrary.shared().register(self)
-        if hasPhotoAccess { refreshAlbums() }
+        if hasPhotoAccess {
+            updateLibraryObservation()
+            refreshAlbums()
+        }
     }
 
     deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
@@ -65,6 +71,7 @@ final class GalleryStore: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
 
     func refreshLibraryState() {
         authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        updateLibraryObservation()
         guard hasPhotoAccess else {
             isPresenting = false
             playbackAssets = []
@@ -118,14 +125,61 @@ final class GalleryStore: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         authorization == .authorized || authorization == .limited
     }
 
+    private func updateLibraryObservation() {
+        if hasPhotoAccess && !observingLibrary {
+            PHPhotoLibrary.shared().register(self)
+            observingLibrary = true
+        } else if !hasPhotoAccess && observingLibrary {
+            PHPhotoLibrary.shared().unregisterChangeObserver(self)
+            observingLibrary = false
+        }
+    }
+
     func requestPhotoAccess() {
-        PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
-            DispatchQueue.main.async {
-                self?.authorization = status
-                if status == .authorized || status == .limited {
-                    self?.refreshAlbums()
+        guard !isRequestingPhotoAccess else { return }
+        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        permissionMessage = nil
+        switch authorization {
+        case .authorized, .limited:
+            refreshLibraryState()
+        case .denied:
+            permissionMessage = "사진 접근이 허용되지 않았습니다. 설정에서 사진 접근을 허용해 주세요."
+            openSettings()
+        case .restricted:
+            permissionMessage = "사진 접근이 기기 정책 또는 스크린 타임으로 제한되어 있습니다. 이 앱 안에서 허용할 수 없습니다."
+        case .notDetermined:
+            guard UIApplication.shared.applicationState == .active else {
+                permissionMessage = "앱이 화면에 열린 상태에서 다시 눌러 주세요."
+                return
+            }
+            isRequestingPhotoAccess = true
+            let token = UUID()
+            permissionRequestToken = token
+            // Let SwiftUI show feedback before invoking the system permission UI.
+            DispatchQueue.main.async { [weak self] in
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
+                    DispatchQueue.main.async {
+                        guard let self, self.permissionRequestToken == token else { return }
+                        self.isRequestingPhotoAccess = false
+                        self.authorization = status
+                        if self.hasPhotoAccess { self.refreshLibraryState() }
+                        else if status == .denied {
+                            self.permissionMessage = "사진 접근이 허용되지 않았습니다. 아래 사진 접근 설정에서 허용할 수 있습니다."
+                        } else if status == .restricted {
+                            self.permissionMessage = "사진 접근이 기기 설정으로 제한되어 있습니다."
+                        } else {
+                            self.permissionMessage = "권한 요청이 완료되지 않았습니다. 현재 권한 확인을 눌러 주세요."
+                        }
+                    }
                 }
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                guard let self, self.permissionRequestToken == token, self.isRequestingPhotoAccess else { return }
+                self.isRequestingPhotoAccess = false
+                self.permissionMessage = "사진 접근 응답을 기다리고 있습니다. 사진 접근 설정에서 현재 상태를 확인해 주세요."
+            }
+        @unknown default:
+            permissionMessage = "사진 접근 상태를 확인하지 못했습니다. 사진 접근 설정을 확인해 주세요."
         }
     }
 
@@ -318,47 +372,59 @@ struct BrandHeading: View {
 
 struct PhotoPermissionView: View {
     @EnvironmentObject private var gallery: GalleryStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 25) {
-            BrandHeading(subtitle: "애플펜슬로 사진을 넘기는 가장 간결한 방법")
-            Spacer()
-            Image(systemName: "photo.stack.fill")
-                .font(.system(size: 76, weight: .ultraLight))
-                .foregroundStyle(Theme.accent)
-                .frame(width: 120, height: 120)
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 30))
-            Text("사진은 그대로.\n넘기는 방법만 새롭게.")
-                .font(.system(size: 43, weight: .bold, design: .rounded))
-                .tracking(-1.5)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("아이패드 사진 보관함의 앨범을 선택하세요. 사진을 별도 파일로 변환하지 않고, 애플펜슬 측면 더블탭으로 다음 사진을 보여줍니다.")
-                .font(.system(size: 17))
-                .foregroundStyle(Theme.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            Button(action: gallery.requestPhotoAccess) {
-                HStack(spacing: 10) {
-                    Text("사진 보관함 연결")
-                    Image(systemName: "arrow.right")
-                }
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Theme.background)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16))
-            }
-            Text("사진은 이 기기에서만 표시됩니다. 별도 서버에 업로드하지 않습니다.")
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.muted)
-            if gallery.authorization == .denied || gallery.authorization == .restricted {
-                Button("설정에서 사진 접근 허용", action: gallery.openSettings)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-            }
-            Spacer()
+    private var buttonTitle: String {
+        gallery.authorization == .denied ? "설정에서 사진 접근 허용" : "사진 보관함 연결"
+    }
+    private var statusText: String {
+        switch gallery.authorization {
+        case .notDetermined: return "사진 접근 권한이 아직 결정되지 않았습니다."
+        case .denied: return "현재 사진 접근이 허용되지 않았습니다."
+        case .restricted: return "현재 사진 접근이 기기 설정으로 제한되어 있습니다."
+        case .authorized: return "사진 전체 접근이 허용되어 있습니다."
+        case .limited: return "일부 사진 접근이 허용되어 있습니다."
+        @unknown default: return "사진 접근 상태를 확인할 수 없습니다."
         }
-        .frame(maxWidth: 560, alignment: .leading)
-        .padding(32)
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                BrandHeading(subtitle: "애플펜슬로 사진을 넘기는 가장 간결한 방법")
+                Image(systemName: "photo.stack.fill")
+                    .font(.system(size: 64)).foregroundStyle(Theme.accent)
+                    .padding(.top, 20)
+                Text("사진은 그대로.\n넘기는 방법만 새롭게.")
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("사진 보관함 접근을 허용하면 기존 앨범과 사진을 선택할 수 있습니다. 원본 사진은 수정하지 않습니다.")
+                    .foregroundStyle(Theme.muted)
+                Button(action: gallery.requestPhotoAccess) {
+                    HStack(spacing: 10) {
+                        if gallery.isRequestingPhotoAccess { ProgressView().tint(Theme.background) }
+                        Text(gallery.isRequestingPhotoAccess ? "사진 접근 응답 대기 중…" : buttonTitle)
+                    }
+                    .font(.headline).foregroundStyle(Theme.background)
+                    .frame(maxWidth: .infinity, minHeight: 60)
+                    .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(gallery.isRequestingPhotoAccess)
+                Text(statusText).font(.footnote).foregroundStyle(Theme.muted)
+                if let message = gallery.permissionMessage {
+                    Text(message).font(.footnote).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 24) {
+                    Button("사진 접근 설정", action: gallery.openSettings)
+                    Button("현재 권한 확인", action: gallery.refreshLibraryState)
+                }.buttonStyle(.bordered)
+                Text("사진은 별도 서버에 업로드하지 않습니다.")
+                    .font(.footnote).foregroundStyle(Theme.muted)
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(32)
+            .frame(maxWidth: .infinity)
+        }
     }
 }
 
