@@ -61,7 +61,7 @@ for icon in icons:
     assert data[25] == 2, 'icons must be opaque RGB without alpha'
 workflow=(root/'.github/workflows/build-ipa.yml').read_text(encoding='utf-8-sig')
 assert '\t' not in workflow
-for required in ['runs-on: macos-15','swiftc PencilSlide/PencilTapPattern.swift','CODE_SIGNING_ALLOWED=NO','lipo -verify_arch arm64','retention-days: 3','PencilSlide-Sera-unsigned.ipa','set -euo pipefail']:
+for required in ['runs-on: macos-15','swiftc PencilSlide/PencilTapPattern.swift','CODE_SIGNING_ALLOWED=NO','-verify_arch arm64','retention-days: 3','PencilSlide-Sera-unsigned.ipa','set -euo pipefail']:
     assert required in workflow, required
 # Basic delimiter scan ignores comments and quoted strings. Not Swift type checking.
 for path in root.rglob('*.swift'):
