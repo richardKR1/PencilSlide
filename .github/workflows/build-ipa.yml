@@ -50,7 +50,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :UIStatusBarHidden' "$APP/Info.plist")" = true
           /usr/libexec/PlistBuddy -c 'Print :NSPhotoLibraryUsageDescription' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName' "$APP/Info.plist"
-          lipo -verify_arch arm64 "$APP/PencilSlide"
+          lipo "$APP/PencilSlide" -verify_arch arm64
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           cd dist
